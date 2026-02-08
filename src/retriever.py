@@ -1,7 +1,6 @@
-"""Retriever module for document retrieval with source citations."""
+"""Retriever module for formatting retrieved documents with source citations."""
 
 from dataclasses import dataclass
-from langchain_chroma import Chroma
 
 
 @dataclass
@@ -19,24 +18,6 @@ class SourceInfo:
     def format_citation(self) -> str:
         """Format the source citation for display."""
         return f"[Source: {self.source_file}, Page {self.page_number}]"
-
-
-def create_retriever(vector_store: Chroma, search_type: str = "similarity", k: int = 4):
-    """
-    Create a retriever from the vector store using as_retriever().
-
-    Args:
-        vector_store: ChromaDB vector store instance.
-        search_type: Type of search - "similarity" or "mmr".
-        k: Number of documents to retrieve.
-
-    Returns:
-        Configured retriever instance.
-    """
-    return vector_store.as_retriever(
-        search_type=search_type,
-        search_kwargs={"k": k},
-    )
 
 
 def extract_source_info(metadata: dict) -> SourceInfo:

@@ -73,16 +73,16 @@ def setup_rag_system(force_reindex: bool = False) -> RAGChain:
         print("\n[4/4] Splitting documents into chunks...")
         chunks = split_documents(documents, chunk_size=1000, chunk_overlap=200)
 
-        # Index documents
+        # Index documents (embeddings are created EXPLICITLY inside this function)
         print("\nIndexing documents into vector store...")
-        index_documents(vector_store, chunks, force_reindex=force_reindex)
+        index_documents(vector_store, chunks, embeddings, force_reindex=force_reindex)
     else:
         print("\n[3/4] Documents already indexed. Skipping document loading.")
         print("[4/4] Skipping text splitting.")
 
-    # Initialize RAG chain
+    # Initialize RAG chain (pass embeddings explicitly so query-time embedding is visible)
     print("\nInitializing RAG chain with Gemini...")
-    rag_chain = RAGChain(vector_store)
+    rag_chain = RAGChain(vector_store, embeddings)
 
     print("\n" + "=" * 60)
     print("RAG System Ready!")
