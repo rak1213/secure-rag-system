@@ -15,9 +15,18 @@ wheels/
 # ChromaDB local storage
 chroma_db/
 
+# Output files
+output/
+
 # IDE
 .idea/
 .vscode/
 
 # macOS
 .DS_Store
+
+# Context files
+.context/
+
+# Claude Code
+.serena/

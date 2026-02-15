@@ -202,6 +202,4 @@ Examples:
 
 
 if __name__ == "__main__":
-    # main()
-    rag_chain = setup_rag_system(force_reindex=False)
-    run_batch_mode(rag_chain, QUERIES)
+    main()
