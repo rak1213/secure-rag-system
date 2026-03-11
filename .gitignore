@@ -34,3 +34,5 @@ output/
 
 # Docker volumes
 docker-data/
+
+.github/
