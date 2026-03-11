@@ -1,0 +1,6 @@
+[  173181ms] [ERROR] WebSocket connection to 'ws://localhost:8501/_stcore/stream' failed:  @ http://localhost:8501/static/js/index.RuhrnD1v.js:136
+[  173181ms] [ERROR] Client Error: WebSocket onerror @ http://localhost:8501/static/js/index.RuhrnD1v.js:136
+[  173394ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_RESET @ http://localhost:8501/_stcore/health:0
+[  173394ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_RESET @ http://localhost:8501/_stcore/host-config:0
+[  173615ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8501/_stcore/health:0
+[  173615ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8501/_stcore/host-config:0

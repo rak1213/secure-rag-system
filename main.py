@@ -1,31 +1,26 @@
 """
 RAG (Retrieval Augmented Generation) System for Document Q&A.
 
-This module provides the main entry point for the RAG system.
-It supports both interactive CLI mode and batch query mode.
-
 Usage:
-    Interactive mode:
-        python main.py
-
-    Batch queries (modify the QUERIES list below):
-        python main.py --batch
+    Interactive mode:     python main.py
+    Batch queries:        python main.py --batch
+    Start API server:     python main.py --serve
+    Force re-index:       python main.py --reindex
 """
 
 import argparse
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from src.config import get_settings
+from src.logging_config import setup_logging, get_logger
+from src.llm_factory import create_llm
+from src.embedding_factory import create_embeddings
+from src.vector_store import get_vector_store, index_documents, is_indexed
 from src.document_loader import load_pdf_documents
 from src.text_splitter import split_documents
-from src.embeddings import get_embeddings
-from src.vector_store import get_vector_store, index_documents, is_indexed
 from src.rag_chain import RAGChain
 
-
-# Load environment variables from .env file
-load_dotenv()
+log = get_logger(__name__)
 
 
 # ============================================================================
@@ -34,70 +29,43 @@ load_dotenv()
 QUERIES = [
     "What is Crosswalk guards?",
     "What to do if moving through an intersection with a green signal?",
-   " what to do when approached by an emergency vehicle?"
+    "What to do when approached by an emergency vehicle?",
 ]
 
 
 def setup_rag_system(force_reindex: bool = False) -> RAGChain:
-    """
-    Set up the complete RAG system.
+    """Set up the complete RAG system."""
+    settings = get_settings()
+    setup_logging(log_level=settings.log_level, log_format=settings.log_format)
 
-    This includes loading documents, creating embeddings,
-    indexing into ChromaDB, and initializing the RAG chain.
+    log.info("setup.start", llm_provider=settings.llm_provider, embedding_provider=settings.embedding_provider)
 
-    Args:
-        force_reindex: If True, re-index documents even if already indexed.
-
-    Returns:
-        Configured RAGChain instance ready for queries.
-    """
-    print("=" * 60)
-    print("Setting up RAG System")
-    print("=" * 60)
-
-    # Initialize embeddings
-    print("\n[1/4] Initializing Jina AI embeddings...")
-    embeddings = get_embeddings()
-
-    # Initialize vector store
-    print("\n[2/4] Initializing ChromaDB vector store...")
+    # Initialize components via factories
+    llm = create_llm(settings)
+    embeddings = create_embeddings(settings)
     vector_store = get_vector_store(embeddings)
 
     # Check if we need to index documents
     if not is_indexed(vector_store) or force_reindex:
-        # Load PDF documents
-        print("\n[3/4] Loading PDF documents from data/ directory...")
         documents = load_pdf_documents("data")
-
-        # Split documents into chunks
-        print("\n[4/4] Splitting documents into chunks...")
-        chunks = split_documents(documents, chunk_size=1000, chunk_overlap=200)
-
-        # Index documents (embeddings are created EXPLICITLY inside this function)
-        print("\nIndexing documents into vector store...")
+        chunks = split_documents(documents, settings.chunk_size, settings.chunk_overlap)
         index_documents(vector_store, chunks, embeddings, force_reindex=force_reindex)
     else:
-        print("\n[3/4] Documents already indexed. Skipping document loading.")
-        print("[4/4] Skipping text splitting.")
+        log.info("setup.index.skip", reason="already_indexed")
 
-    # Initialize RAG chain (pass embeddings explicitly so query-time embedding is visible)
-    print("\nInitializing RAG chain with Gemini...")
-    rag_chain = RAGChain(vector_store, embeddings)
+    rag_chain = RAGChain(
+        vector_store=vector_store,
+        embeddings=embeddings,
+        llm=llm,
+        num_chunks=settings.num_retrieval_chunks,
+    )
 
-    print("\n" + "=" * 60)
-    print("RAG System Ready!")
-    print("=" * 60)
-
+    log.info("setup.complete")
     return rag_chain
 
 
 def run_interactive_mode(rag_chain: RAGChain) -> None:
-    """
-    Run the RAG system in interactive CLI mode.
-
-    Args:
-        rag_chain: Configured RAGChain instance.
-    """
+    """Run the RAG system in interactive CLI mode."""
     print("\nInteractive Mode - Ask questions about your documents")
     print("Type 'quit' or 'exit' to stop\n")
 
@@ -113,7 +81,6 @@ def run_interactive_mode(rag_chain: RAGChain) -> None:
                 print("Goodbye!")
                 break
 
-            print("\nSearching documents and generating answer...\n")
             response = rag_chain.query(query)
 
             print("-" * 50)
@@ -128,13 +95,7 @@ def run_interactive_mode(rag_chain: RAGChain) -> None:
 
 
 def run_batch_mode(rag_chain: RAGChain, queries: list[str]) -> None:
-    """
-    Run the RAG system with a batch of queries.
-
-    Args:
-        rag_chain: Configured RAGChain instance.
-        queries: List of questions to answer.
-    """
+    """Run the RAG system with a batch of queries."""
     print(f"\nBatch Mode - Processing {len(queries)} queries\n")
 
     for i, query in enumerate(queries, 1):
@@ -149,6 +110,22 @@ def run_batch_mode(rag_chain: RAGChain, queries: list[str]) -> None:
         print()
 
 
+def run_server() -> None:
+    """Start the FastAPI server."""
+    import uvicorn
+    from src.api.app import create_app
+
+    settings = get_settings()
+    app = create_app()
+
+    log.info("server.start", host=settings.api_host, port=settings.api_port)
+    print(f"\nStarting API server at http://{settings.api_host}:{settings.api_port}")
+    print(f"API docs: http://localhost:{settings.api_port}/docs")
+    print(f"Health:   http://localhost:{settings.api_port}/api/v1/health\n")
+
+    uvicorn.run(app, host=settings.api_host, port=settings.api_port)
+
+
 def main() -> None:
     """Main entry point for the RAG system."""
     parser = argparse.ArgumentParser(
@@ -157,24 +134,23 @@ def main() -> None:
         epilog="""
 Examples:
   python main.py                 # Interactive mode
-  python main.py --batch         # Run batch queries (modify QUERIES list in main.py)
+  python main.py --batch         # Run batch queries
+  python main.py --serve         # Start API server
   python main.py --reindex       # Force re-indexing of documents
         """,
     )
-    parser.add_argument(
-        "--batch",
-        action="store_true",
-        help="Run in batch mode with predefined queries",
-    )
-    parser.add_argument(
-        "--reindex",
-        action="store_true",
-        help="Force re-indexing of documents",
-    )
+    parser.add_argument("--batch", action="store_true", help="Run in batch mode with predefined queries")
+    parser.add_argument("--reindex", action="store_true", help="Force re-indexing of documents")
+    parser.add_argument("--serve", action="store_true", help="Start the FastAPI REST API server")
 
     args = parser.parse_args()
 
-    # Verify data directory exists
+    # Server mode doesn't need local data check (handled during startup)
+    if args.serve:
+        run_server()
+        return
+
+    # Verify data directory exists for CLI modes
     data_dir = Path("data")
     if not data_dir.exists():
         print("Error: 'data/' directory not found.")

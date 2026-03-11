@@ -1,39 +1,13 @@
 """
 Secure RAG Chain — Enhanced RAG pipeline with all guardrails and defenses.
 
-This module wraps the base RAG pipeline with three security layers:
-
-  Layer 1: INPUT GUARDRAILS   → Validate queries before processing
-  Layer 2: PROMPT DEFENSES    → Protect against prompt injection attacks
-  Layer 3: OUTPUT GUARDRAILS  → Validate responses before returning
-
-The flow for each query is:
-  ┌──────────────────────────────────────────────────────────────┐
-  │ User Query                                                    │
-  │   ↓                                                           │
-  │ [INPUT GUARDRAILS] — length, PII, off-topic checks           │
-  │   ↓                                                           │
-  │ [PROMPT DEFENSES] — injection detection, jailbreak check     │
-  │   ↓                                                           │
-  │ [RETRIEVAL] — similarity search WITH relevance scores        │
-  │   ↓                                                           │
-  │ [RETRIEVAL CONFIDENCE] — check if chunks are relevant enough │
-  │   ↓                                                           │
-  │ [CONTEXT WRAPPING] — wrap context in safety delimiters       │
-  │   ↓                                                           │
-  │ [LLM GENERATION] — hardened system prompt + timeout          │
-  │   ↓                                                           │
-  │ [OUTPUT VALIDATION] — check for leaked prompts, length cap   │
-  │   ↓                                                           │
-  │ [EVALUATION] — faithfulness scoring                          │
-  │   ↓                                                           │
-  │ Secure Response                                               │
-  └──────────────────────────────────────────────────────────────┘
+  Layer 1: INPUT GUARDRAILS   — Validate queries before processing
+  Layer 2: PROMPT DEFENSES    — Protect against prompt injection attacks
+  Layer 3: OUTPUT GUARDRAILS  — Validate responses before returning
 """
 
-import os
 from dataclasses import dataclass, field
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
@@ -60,6 +34,9 @@ from .evaluation import (
     evaluate_retrieval_relevance,
 )
 from .logger import SecurityLogger
+from .logging_config import get_logger
+
+log = get_logger(__name__)
 
 
 # ============================================================================
@@ -68,23 +45,7 @@ from .logger import SecurityLogger
 
 @dataclass
 class SecureRAGResponse:
-    """
-    Response from the secure RAG system.
-
-    Extends the original RAGResponse with security and evaluation metadata.
-
-    Attributes:
-        answer: The generated answer text (may be a refusal message).
-        sources: List of source citations.
-        source_documents: Retrieved Document objects.
-        guardrails_triggered: Which guardrails activated for this query.
-        defenses_triggered: Which prompt defenses activated.
-        error_codes: Any error codes generated.
-        was_blocked: Whether the query was blocked before reaching the LLM.
-        faithfulness_score: LLM faithfulness evaluation score (0-1).
-        retrieval_scores: Similarity scores from chunk retrieval.
-        messages: Warning/info messages for the user.
-    """
+    """Response from the secure RAG system with security metadata."""
     answer: str
     sources: list[str] = field(default_factory=list)
     source_documents: list[Document] = field(default_factory=list)
@@ -100,16 +61,13 @@ class SecureRAGResponse:
         """Format the complete response with all metadata."""
         parts = []
 
-        # Show any warnings/messages first
         if self.messages:
             for msg in self.messages:
                 parts.append(f"[!] {msg}")
             parts.append("")
 
-        # The answer
         parts.append(self.answer)
 
-        # Sources
         if self.sources:
             parts.append("\n--- Sources ---")
             for source in self.sources:
@@ -123,34 +81,26 @@ class SecureRAGResponse:
 # ============================================================================
 
 class SecureRAGChain:
-    """
-    Production-ready RAG chain with guardrails, prompt injection defense,
-    and evaluation built in.
-
-    Wraps the core components (Jina embeddings, ChromaDB, Google Gemini)
-    with three security layers.
-    """
+    """Production-ready RAG chain with guardrails, prompt injection defense,
+    and evaluation built in."""
 
     def __init__(
         self,
         vector_store: Chroma,
         embeddings: Embeddings,
-        api_key: str | None = None,
-        model_name: str = "gemini-2.5-flash",
+        llm: BaseChatModel,
         num_chunks: int = 4,
         confidence_threshold: float = 0.3,
         timeout_seconds: int = 30,
         max_response_words: int = 500,
         logger: SecurityLogger | None = None,
     ):
-        """
-        Initialize the Secure RAG chain.
+        """Initialize the Secure RAG chain.
 
         Args:
             vector_store: ChromaDB vector store with indexed documents.
-            embeddings: Jina AI embeddings model.
-            api_key: Google API key (reads from env if not provided).
-            model_name: Gemini model name.
+            embeddings: Embeddings model.
+            llm: Language model instance (any BaseChatModel).
             num_chunks: Number of chunks to retrieve per query.
             confidence_threshold: Minimum relevance score for retrieval.
             timeout_seconds: Max seconds to wait for LLM response.
@@ -164,22 +114,8 @@ class SecureRAGChain:
         self.timeout_seconds = timeout_seconds
         self.max_response_words = max_response_words
         self.logger = logger or SecurityLogger()
+        self.llm = llm
 
-        # Initialize LLM
-        google_api_key = api_key or os.getenv("GOOGLE_API_KEY")
-        if not google_api_key:
-            raise ValueError(
-                "Google API key is required. Set GOOGLE_API_KEY environment variable "
-                "or pass api_key parameter."
-            )
-
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=google_api_key,
-            temperature=0.1,
-        )
-
-        # Build the LCEL chain with HARDENED system prompt
         hardened_prompt = get_hardened_system_prompt()
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", hardened_prompt),
@@ -187,52 +123,23 @@ class SecureRAGChain:
         ])
         self.chain = self.prompt | self.llm | StrOutputParser()
 
-        print(f"\n  SecureRAGChain initialized:")
-        print(f"    Model: {model_name}")
-        print(f"    Chunks per query: {num_chunks}")
-        print(f"    Confidence threshold: {confidence_threshold}")
-        print(f"    Timeout: {timeout_seconds}s")
-        print(f"    Max response: {max_response_words} words")
-        print(f"    Defenses: ALL 5 active")
-        print(f"    Guardrails: Input + Output + Execution limits")
+        log.info("secure_rag.init",
+                 num_chunks=num_chunks,
+                 confidence_threshold=confidence_threshold,
+                 timeout_seconds=timeout_seconds,
+                 max_response_words=max_response_words)
 
     def query(self, question: str) -> SecureRAGResponse:
-        """
-        Process a question through the SECURE RAG pipeline.
-
-        This is the main method. Each step is logged in detail so you
-        can trace exactly what happened at every security checkpoint.
-
-        Steps:
-          1. Input Guardrails (length, PII, off-topic)
-          2. Prompt Injection Defenses (jailbreak, sanitization)
-          3. Embed & Retrieve (with relevance scores)
-          4. Retrieval Confidence Check
-          5. Context Wrapping (instruction-data separation)
-          6. LLM Generation (hardened prompt + timeout)
-          7. Output Validation (leak check + length cap)
-          8. Faithfulness Evaluation
-
-        Args:
-            question: The user's question.
-
-        Returns:
-            SecureRAGResponse with answer and all security metadata.
-        """
-        print(f"\n{'='*70}")
-        print(f"  SECURE RAG QUERY")
-        print(f"  Question: \"{question[:80]}{'...' if len(question) > 80 else ''}\"")
-        print(f"{'='*70}")
+        """Process a question through the SECURE RAG pipeline (8 steps)."""
+        log.info("secure_rag.query.start", question=question[:80])
 
         all_guardrails = []
         all_defenses = []
         all_error_codes = []
         all_messages = []
 
-        # ==================================================================
         # STEP 1: INPUT GUARDRAILS
-        # ==================================================================
-        print(f"\n  STEP 1/8: INPUT GUARDRAILS")
+        log.info("secure_rag.step", step="1/8", name="input_guardrails")
         can_proceed, processed_query, triggered, error_codes, messages = run_input_guardrails(
             question, self.llm
         )
@@ -241,7 +148,6 @@ class SecureRAGChain:
         all_messages.extend(messages)
 
         if not can_proceed:
-            # Query was blocked by input guardrails
             answer = messages[-1] if messages else "Your query was blocked by our safety system."
             response = SecureRAGResponse(
                 answer=answer,
@@ -251,19 +157,15 @@ class SecureRAGChain:
                 messages=all_messages,
             )
             self._log_response(question, response)
-            print(f"\n  RESULT: BLOCKED by input guardrails")
-            print(f"{'='*70}\n")
+            log.info("secure_rag.query.blocked", step="input_guardrails")
             return response
 
-        # ==================================================================
         # STEP 2: PROMPT INJECTION DEFENSES
-        # ==================================================================
-        print(f"\n  STEP 2/8: PROMPT INJECTION DEFENSES")
+        log.info("secure_rag.step", step="2/8", name="prompt_defenses")
         defense_ok, refusal_msg, defenses = run_prompt_defenses(processed_query)
         all_defenses.extend(defenses)
 
         if not defense_ok:
-            # Prompt injection detected — return standardized refusal
             all_error_codes.append(ErrorCode.POLICY_BLOCK)
             response = SecureRAGResponse(
                 answer=refusal_msg,
@@ -274,20 +176,11 @@ class SecureRAGChain:
                 messages=all_messages,
             )
             self._log_response(question, response)
-            print(f"\n  RESULT: BLOCKED by prompt injection defense")
-            print(f"{'='*70}\n")
+            log.info("secure_rag.query.blocked", step="prompt_defenses")
             return response
 
-        # ==================================================================
-        # STEP 3: EMBED & RETRIEVE (with relevance scores)
-        # ==================================================================
-        print(f"\n  STEP 3/8: EMBED & RETRIEVE WITH SCORES")
-        print(f"    Embedding query and searching vector store...")
-
-        # query_vector = self.embeddings.embed_query(processed_query)
-        # print(f"    Query embedded: {len(query_vector)} dimensions")
-
-        # Use similarity_search_with_relevance_scores for confidence checking
+        # STEP 3: EMBED & RETRIEVE
+        log.info("secure_rag.step", step="3/8", name="embed_retrieve")
         docs_with_scores = self.vector_store.similarity_search_with_relevance_scores(
             processed_query, k=self.num_chunks
         )
@@ -295,15 +188,11 @@ class SecureRAGChain:
         scores = [score for _, score in docs_with_scores]
         docs = [doc for doc, _ in docs_with_scores]
 
-        print(f"    Retrieved {len(docs)} chunks with scores:")
-        for i, (doc, score) in enumerate(docs_with_scores, 1):
-            preview = doc.page_content[:60].replace("\n", " ")
-            print(f"      Chunk {i}: score={score:.4f} | \"{preview}...\"")
+        log.info("secure_rag.retrieved", num_chunks=len(docs),
+                 top_score=round(max(scores), 4) if scores else 0)
 
-        # ==================================================================
         # STEP 4: RETRIEVAL CONFIDENCE CHECK
-        # ==================================================================
-        print(f"\n  STEP 4/8: RETRIEVAL CONFIDENCE CHECK")
+        log.info("secure_rag.step", step="4/8", name="retrieval_confidence")
         confidence_result = check_retrieval_confidence(
             docs_with_scores, threshold=self.confidence_threshold
         )
@@ -321,25 +210,16 @@ class SecureRAGChain:
                 messages=all_messages,
             )
             self._log_response(question, response)
-            print(f"\n  RESULT: BLOCKED by retrieval confidence check")
-            print(f"{'='*70}\n")
+            log.info("secure_rag.query.blocked", step="retrieval_confidence")
             return response
 
-        # ==================================================================
-        # STEP 5: CONTEXT WRAPPING (Defense 3 - Instruction-Data Separation)
-        # ==================================================================
-        print(f"\n  STEP 5/8: CONTEXT WRAPPING (instruction-data separation)")
+        # STEP 5: CONTEXT WRAPPING
+        log.info("secure_rag.step", step="5/8", name="context_wrapping")
         context, citations = format_docs_with_sources(docs)
         wrapped_context = wrap_context_with_delimiters(context)
-        print(f"    Context: {len(wrapped_context)} chars from {len(docs)} chunks")
 
-        # ==================================================================
-        # STEP 6: LLM GENERATION (with hardened prompt + timeout)
-        # ==================================================================
-        print(f"\n  STEP 6/8: LLM GENERATION (hardened prompt + timeout)")
-        print(f"    Sending to Gemini with hardened system prompt...")
-        print(f"    Timeout: {self.timeout_seconds}s")
-
+        # STEP 6: LLM GENERATION
+        log.info("secure_rag.step", step="6/8", name="llm_generation")
         try:
             def generate():
                 return self.chain.invoke({
@@ -348,7 +228,7 @@ class SecureRAGChain:
                 })
 
             answer = run_with_timeout(generate, self.timeout_seconds)
-            print(f"    LLM response received: {len(answer)} chars")
+            log.info("secure_rag.llm_response", answer_chars=len(answer))
 
         except TimeoutError:
             all_error_codes.append(ErrorCode.LLM_TIMEOUT)
@@ -363,8 +243,7 @@ class SecureRAGChain:
                 messages=all_messages,
             )
             self._log_response(question, response)
-            print(f"\n  RESULT: TIMEOUT — LLM exceeded {self.timeout_seconds}s")
-            print(f"{'='*70}\n")
+            log.warning("secure_rag.query.timeout", timeout_seconds=self.timeout_seconds)
             return response
 
         except Exception as e:
@@ -379,16 +258,11 @@ class SecureRAGChain:
                 messages=all_messages,
             )
             self._log_response(question, response)
-            print(f"\n  RESULT: ERROR — {e}")
-            print(f"{'='*70}\n")
+            log.error("secure_rag.query.error", error=str(e))
             return response
 
-        # ==================================================================
-        # STEP 7: OUTPUT VALIDATION (Defense 4 + length cap)
-        # ==================================================================
-        print(f"\n  STEP 7/8: OUTPUT VALIDATION")
-
-        # Defense 4: Check for leaked system prompt or suspicious content
+        # STEP 7: OUTPUT VALIDATION
+        log.info("secure_rag.step", step="7/8", name="output_validation")
         output_safe, output_reason = validate_output(answer)
         if not output_safe:
             all_defenses.append("OUTPUT_VALIDATION")
@@ -398,25 +272,18 @@ class SecureRAGChain:
                 "Please rephrase your question."
             )
             all_messages.append(f"Response was filtered: {output_reason}")
-            print(f"    Output REPLACED due to: {output_reason}")
+            log.warning("secure_rag.output_filtered", reason=output_reason)
 
-        # Response length cap
         answer, was_truncated = check_response_length(answer, self.max_response_words)
         if was_truncated:
             all_guardrails.append("RESPONSE_LENGTH_LIMIT")
 
-        # ==================================================================
         # STEP 8: FAITHFULNESS EVALUATION
-        # ==================================================================
-        print(f"\n  STEP 8/8: FAITHFULNESS EVALUATION")
+        log.info("secure_rag.step", step="8/8", name="faithfulness_eval")
         faithfulness_score = check_faithfulness(answer, context, self.llm)
+        evaluate_retrieval_relevance(scores, self.confidence_threshold)
 
-        # Retrieval relevance evaluation
-        relevance_stats = evaluate_retrieval_relevance(scores, self.confidence_threshold)
-
-        # ==================================================================
         # BUILD FINAL RESPONSE
-        # ==================================================================
         response = SecureRAGResponse(
             answer=answer,
             sources=citations,
@@ -432,12 +299,11 @@ class SecureRAGChain:
 
         self._log_response(question, response)
 
-        print(f"\n  RESULT: SUCCESS")
-        print(f"    Answer: {len(answer)} chars")
-        print(f"    Faithfulness: {faithfulness_score:.2f}")
-        print(f"    Guardrails triggered: {all_guardrails or 'NONE'}")
-        print(f"    Defenses triggered: {all_defenses or 'NONE'}")
-        print(f"{'='*70}\n")
+        log.info("secure_rag.query.done",
+                 answer_chars=len(answer),
+                 faithfulness=faithfulness_score,
+                 guardrails=all_guardrails or None,
+                 defenses=all_defenses or None)
 
         return response
 
@@ -455,13 +321,5 @@ class SecureRAGChain:
         )
 
     def batch_query(self, questions: list[str]) -> list[SecureRAGResponse]:
-        """
-        Process multiple questions through the secure pipeline.
-
-        Args:
-            questions: List of questions to answer.
-
-        Returns:
-            List of SecureRAGResponse objects.
-        """
+        """Process multiple questions through the secure pipeline."""
         return [self.query(q) for q in questions]

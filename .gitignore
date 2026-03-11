@@ -30,3 +30,7 @@ output/
 
 # Claude Code
 .serena/
+.claude/
+
+# Docker volumes
+docker-data/

@@ -1,0 +1,16 @@
+.venv/
+.git/
+__pycache__/
+*.py[oc]
+.env
+chroma_db/
+output/
+.idea/
+.vscode/
+.DS_Store
+.context/
+.serena/
+.claude/
+tests/
+.github/
+*.md

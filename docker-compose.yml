@@ -1,0 +1,35 @@
+services:
+  rag-api:
+    build: .
+    ports:
+      - "8000:8000"
+      - "6006:6006"
+    volumes:
+      - ./data:/app/data
+      - chroma_data:/app/chroma_db
+    env_file:
+      - .env
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_FORMAT=json
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  streamlit:
+    build: .
+    command: uv run streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - RAG_API_URL=http://rag-api:8000
+    depends_on:
+      rag-api:
+        condition: service_healthy
+
+volumes:
+  chroma_data:

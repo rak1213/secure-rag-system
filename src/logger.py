@@ -1,18 +1,11 @@
-"""
-Logging Dashboard Module — Track and summarize system activity.
-
-This module provides a simple logging system that records:
-  - Total queries processed
-  - Guardrails triggered (count by type)
-  - Prompt injection attempts blocked
-  - Faithfulness scores for evaluation
-  - Retrieval relevance scores
-
-At the end of a run, it prints a clean summary dashboard.
-"""
+"""Logging Dashboard Module — Track and summarize system activity."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from .logging_config import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -24,24 +17,15 @@ class QueryLog:
     error_codes: list[str] = field(default_factory=list)
     defenses_triggered: list[str] = field(default_factory=list)
     was_blocked: bool = False
-    faithfulness_score: float = -1.0  # -1 means not evaluated
+    faithfulness_score: float = -1.0
     retrieval_scores: list[float] = field(default_factory=list)
     answer_length_words: int = 0
 
 
 class SecurityLogger:
-    """
-    Tracks all security events and query results for dashboard reporting.
-
-    Usage:
-        logger = SecurityLogger()
-        logger.log_query(...)       # Log each query
-        logger.print_dashboard()    # Print summary at the end
-        logger.get_dashboard_text() # Get summary as string
-    """
+    """Tracks all security events and query results for dashboard reporting."""
 
     def __init__(self):
-        """Initialize the logger with empty tracking lists."""
         self.logs: list[QueryLog] = []
         self.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -56,20 +40,8 @@ class SecurityLogger:
         retrieval_scores: list[float] = None,
         answer_length_words: int = 0,
     ) -> None:
-        """
-        Record a query and its processing results.
-
-        Args:
-            query: The user's query.
-            guardrails_triggered: List of guardrail names that activated.
-            error_codes: List of error codes generated.
-            defenses_triggered: List of defense names that activated.
-            was_blocked: Whether the query was blocked entirely.
-            faithfulness_score: LLM faithfulness evaluation score (0-1).
-            retrieval_scores: Similarity scores from retrieval.
-            answer_length_words: Word count of the generated answer.
-        """
-        log = QueryLog(
+        """Record a query and its processing results."""
+        entry = QueryLog(
             query=query[:100],
             timestamp=datetime.now().strftime("%H:%M:%S"),
             guardrails_triggered=guardrails_triggered or [],
@@ -80,15 +52,41 @@ class SecurityLogger:
             retrieval_scores=retrieval_scores or [],
             answer_length_words=answer_length_words,
         )
-        self.logs.append(log)
+        self.logs.append(entry)
+        log.debug("security_logger.query_logged", was_blocked=was_blocked)
+
+    def get_metrics(self) -> dict:
+        """Get metrics as a dictionary (used by the API)."""
+        total = len(self.logs)
+        blocked = sum(1 for entry in self.logs if entry.was_blocked)
+        faith_scores = [entry.faithfulness_score for entry in self.logs if entry.faithfulness_score >= 0]
+        all_retrieval_scores = []
+        for entry in self.logs:
+            all_retrieval_scores.extend(entry.retrieval_scores)
+
+        guardrail_counts = {}
+        for entry in self.logs:
+            for g in entry.guardrails_triggered:
+                guardrail_counts[g] = guardrail_counts.get(g, 0) + 1
+
+        defense_counts = {}
+        for entry in self.logs:
+            for d in entry.defenses_triggered:
+                defense_counts[d] = defense_counts.get(d, 0) + 1
+
+        return {
+            "session_start": self.start_time,
+            "total_queries": total,
+            "queries_processed": total - blocked,
+            "queries_blocked": blocked,
+            "guardrails_triggered": guardrail_counts,
+            "defenses_triggered": defense_counts,
+            "avg_faithfulness": round(sum(faith_scores) / len(faith_scores), 4) if faith_scores else None,
+            "avg_retrieval_score": round(sum(all_retrieval_scores) / len(all_retrieval_scores), 4) if all_retrieval_scores else None,
+        }
 
     def get_dashboard_text(self) -> str:
-        """
-        Generate the dashboard summary as a formatted string.
-
-        Returns:
-            Multi-line string with the complete dashboard.
-        """
+        """Generate the dashboard summary as a formatted string."""
         lines = []
         lines.append("")
         lines.append("=" * 70)
@@ -96,44 +94,40 @@ class SecurityLogger:
         lines.append(f"  Session started: {self.start_time}")
         lines.append("=" * 70)
 
-        # --- Total queries ---
         total = len(self.logs)
-        blocked = sum(1 for log in self.logs if log.was_blocked)
+        blocked = sum(1 for entry in self.logs if entry.was_blocked)
         processed = total - blocked
-        lines.append(f"\n  QUERY SUMMARY")
+        lines.append("\n  QUERY SUMMARY")
         lines.append(f"  {'Total queries:':<35} {total}")
         lines.append(f"  {'Successfully processed:':<35} {processed}")
         lines.append(f"  {'Blocked by guardrails/defenses:':<35} {blocked}")
 
-        # --- Guardrails triggered (count by type) ---
         guardrail_counts = {}
-        for log in self.logs:
-            for g in log.guardrails_triggered:
+        for entry in self.logs:
+            for g in entry.guardrails_triggered:
                 guardrail_counts[g] = guardrail_counts.get(g, 0) + 1
 
-        lines.append(f"\n  GUARDRAILS TRIGGERED (by type)")
+        lines.append("\n  GUARDRAILS TRIGGERED (by type)")
         if guardrail_counts:
             for name, count in sorted(guardrail_counts.items()):
                 lines.append(f"  {'  ' + name + ':':<35} {count} time(s)")
         else:
             lines.append(f"  {'  (none triggered)'}")
 
-        # --- Injection attempts blocked ---
         defense_counts = {}
-        for log in self.logs:
-            for d in log.defenses_triggered:
+        for entry in self.logs:
+            for d in entry.defenses_triggered:
                 defense_counts[d] = defense_counts.get(d, 0) + 1
 
-        injection_blocked = sum(1 for log in self.logs if log.defenses_triggered)
-        lines.append(f"\n  PROMPT INJECTION DEFENSE")
+        injection_blocked = sum(1 for entry in self.logs if entry.defenses_triggered)
+        lines.append("\n  PROMPT INJECTION DEFENSE")
         lines.append(f"  {'Total injection attempts blocked:':<35} {injection_blocked}")
         if defense_counts:
             for name, count in sorted(defense_counts.items()):
                 lines.append(f"  {'  ' + name + ':':<35} {count} time(s)")
 
-        # --- Faithfulness scores ---
-        faith_scores = [log.faithfulness_score for log in self.logs if log.faithfulness_score >= 0]
-        lines.append(f"\n  EVALUATION METRICS")
+        faith_scores = [entry.faithfulness_score for entry in self.logs if entry.faithfulness_score >= 0]
+        lines.append("\n  EVALUATION METRICS")
         if faith_scores:
             avg_faith = sum(faith_scores) / len(faith_scores)
             lines.append(f"  {'Faithfulness scores evaluated:':<35} {len(faith_scores)}")
@@ -143,10 +137,9 @@ class SecurityLogger:
         else:
             lines.append(f"  {'Faithfulness scores evaluated:':<35} 0")
 
-        # --- Retrieval relevance ---
         all_retrieval_scores = []
-        for log in self.logs:
-            all_retrieval_scores.extend(log.retrieval_scores)
+        for entry in self.logs:
+            all_retrieval_scores.extend(entry.retrieval_scores)
 
         if all_retrieval_scores:
             avg_retrieval = sum(all_retrieval_scores) / len(all_retrieval_scores)
@@ -154,13 +147,12 @@ class SecurityLogger:
         else:
             lines.append(f"  {'Avg retrieval relevance score:':<35} N/A")
 
-        # --- Error code breakdown ---
         error_counts = {}
-        for log in self.logs:
-            for e in log.error_codes:
+        for entry in self.logs:
+            for e in entry.error_codes:
                 error_counts[e] = error_counts.get(e, 0) + 1
 
-        lines.append(f"\n  ERROR CODES ISSUED")
+        lines.append("\n  ERROR CODES ISSUED")
         if error_counts:
             for code, count in sorted(error_counts.items()):
                 lines.append(f"  {'  ' + code + ':':<35} {count} time(s)")
